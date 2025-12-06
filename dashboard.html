@@ -1,0 +1,388 @@
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmartPay Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  </head>
+  <body class="bg-gradient-to-br from-indigo-50 via-white to-purple-50 min-h-screen p-6">
+    <div class="max-w-5xl mx-auto animate-fadeIn">
+      <div class="bg-white shadow-xl rounded-3xl p-8 mb-8 border border-indigo-100">
+        <h1 id="dash-title" class="text-4xl font-extrabold text-indigo-700 mb-3 tracking-tight">Dashboard</h1>
+        <p id="dash-sub" class="text-gray-500 text-lg">Loading user details...</p>
+      </div>
+
+      <div id="content" class="space-y-6"></div>
+
+      <div class="text-center mt-10">
+        <button onclick="logout()" class="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition duration-300 shadow-md">Logout</button>
+      </div>
+    </div>
+
+    <style>
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
+      .animate-fadeIn { animation: fadeIn 0.6s ease-in-out; }
+      .history-container { max-height: 400px; overflow-y: auto; }
+    </style>
+
+  <script type="module">
+
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+  import { getDatabase, ref, get, set, onValue } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+  import { getAuth, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+  const RAZORPAY_KEY_ID = "rzp_live_4Q8jp85PoPrc7x";
+  const ADMIN_EMAIL = "walletidgroup@gmail.com";
+  
+  const firebaseConfig = {
+      apiKey: "AIzaSyAwCBtmPylGLPngM0CbPIE03zQ-Cg4SObM",
+      authDomain: "smartpayment-98fc1.firebaseapp.com",
+      databaseURL: "https://smartpayment-98fc1-default-rtdb.firebaseio.com",
+      projectId: "smartpayment-98fc1",
+      storageBucket: "smartpayment-98fc1.firebasestorage.app",
+      messagingSenderId: "877837329158",
+      appId: "1:877837329158:web:70bc5e3a9788df150f7487",
+      measurementId: "G-KJ24HEY56S"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const auth = getAuth(app);
+
+  const params = new URLSearchParams(window.location.search);
+  const role = params.get("role");
+  const name = params.get("name");
+  const uid = params.get("uid");
+
+  const title = document.getElementById("dash-title");
+  const sub = document.getElementById("dash-sub");
+  const content = document.getElementById("content");
+
+  // --- UTILS ---
+
+  // Formats UTC timestamp (milliseconds) to a readable date/time string
+  function formatTimestamp(timestamp) {
+      if (!timestamp || typeof timestamp !== 'number') return 'N/A';
+      const date = new Date(timestamp);
+      // Format: DD/MM/YY HH:MM:SS
+      return date.toLocaleTimeString('en-US', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+  function viewAttendance() {
+    let url = "";
+
+    if (role === "admin") {
+        url = "https://docs.google.com/spreadsheets/d/1YGTb3V-hCfdZ22OeT3MVScYggBcJFTOluF7OZLkAxao/edit?gid=0#gid=0";
+    } else if (name.toLowerCase() === "jeswin") {
+        url = "https://docs.google.com/spreadsheets/d/1YGTb3V-hCfdZ22OeT3MVScYggBcJFTOluF7OZLkAxao/edit?gid=225074323#gid=225074323";
+    } else if (name.toLowerCase() === "suraj") {
+        url = "https://docs.google.com/spreadsheets/d/1YGTb3V-hCfdZ22OeT3MVScYggBcJFTOluF7OZLkAxao/edit?gid=1196588043#gid=1196588043";
+    } else {
+        alert("No attendance sheet available for this user.");
+        return;
+    }
+
+    window.open(url, "_blank"); // Opens the sheet in a new tab
+}
+window.viewAttendance = viewAttendance;
+
+  // Function to render transactions in a table
+  function renderTransactionHistory(transactions, containerId, uid, isAdmin) {
+      const container = document.getElementById(containerId);
+      let html = `<div class="history-container p-4 border border-gray-200 rounded-xl bg-white shadow-inner">
+                    <table class="min-w-full divide-y divide-gray-200">
+                      <thead class="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th class="px-4 py-2 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Type / Source</th>
+                          <th class="px-4 py-2 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Amount</th>
+                          <th class="px-4 py-2 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Time</th>
+                          ${isAdmin ? '<th class="px-4 py-2 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">New Balance</th>' : ''}
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-gray-100">`;
+
+      // Convert object to array and sort by timestamp (latest first)
+      let sortedTxs = Object.values(transactions);
+      // Note: Some transactions may use Firebase's numeric timestamp (ESP32), others may use ISO string (Web Recharge)
+      sortedTxs.sort((a, b) => {
+          const timeA = a.timestamp || (a.time ? new Date(a.time).getTime() : 0);
+          const timeB = b.timestamp || (b.time ? new Date(b.time).getTime() : 0);
+          return timeB - timeA; // Descending order
+      });
+
+      if (sortedTxs.length === 0) {
+          html += `<tr><td colspan="${isAdmin ? 4 : 3}" class="text-center py-4 text-gray-500 text-sm">No transactions found for this student.</td></tr>`;
+      } else {
+          sortedTxs.forEach(tx => {
+              // Determine type: ESP32 payment (amount is negative, new_balance < current) vs Web Recharge ('RECHARGE' type, amount is positive)
+              // We use the sign of the amount to determine if it was a payment (-) or recharge (+)
+              const isRecharge = tx.amount > 0;
+              const amountClass = isRecharge ? 'text-green-600' : 'text-red-600';
+              const sign = tx.amount > 0 ? '+' : '-';
+              const source = isRecharge ? 'Recharge (Web)' : 'Payment (Box)';
+              
+              // Use the numeric timestamp first, fall back to ISO string conversion
+              const displayTime = formatTimestamp(tx.timestamp || (tx.time ? new Date(tx.time).getTime() : 0)); 
+              const displayAmount = Math.abs(Number(tx.amount)).toFixed(2); // Display absolute value
+
+              html += `
+                  <tr class="hover:bg-gray-50">
+                      <td class="px-4 py-2 text-sm text-gray-900">${source}</td>
+                      <td class="px-4 py-2 text-sm font-bold ${amountClass}">${sign}₹${displayAmount}</td>
+                      <td class="px-4 py-2 text-xs text-gray-600">${displayTime}</td>
+                      ${isAdmin ? `<td class="px-4 py-2 text-sm text-gray-700">₹${Number(tx.new_balance || 'N/A').toFixed(2)}</td>` : ''}
+                  </tr>
+              `;
+          });
+      }
+
+      html += `</tbody></table></div>`;
+      container.innerHTML = html;
+  }
+
+
+  // --- NAVIGATION ---
+  async function logout() {
+    if (role === 'admin') { 
+      try { 
+        await signOut(auth); // Sign out Firebase Auth user
+      } catch(e) {
+        console.error("Admin sign out failed:", e);
+      } 
+    }
+    window.location.href = "login.html";
+  }
+  window.logout = logout;
+
+  // --- BALANCE UPDATE LOGIC (Same as before) ---
+
+  async function handleRechargeSuccess(studentUID, amount, paymentID) {
+    const msg = document.getElementById('recharge-message');
+    msg.textContent = `Payment confirmed. Updating balance...`;
+    msg.className = 'mt-3 text-sm text-yellow-600 font-medium';
+
+    try {
+      const balanceRef = ref(db, `/balances/${studentUID}/balance`);
+      const snap = await get(balanceRef);
+      const currentBalance = snap.exists() ? (snap.val() || 0) : 0;
+      const newBalance = currentBalance + amount;
+
+      await set(balanceRef, newBalance);
+
+      // Log transaction (Recharge type)
+      await set(ref(db, `transactions/${studentUID}/${paymentID}`), {
+        amount: amount,
+        time: new Date().toISOString(),
+        new_balance: newBalance, // Include new_balance for logging
+        type: 'RECHARGE'
+      });
+
+      msg.textContent = `Success! ₹${amount.toFixed(2)} credited. New Balance: ₹${newBalance.toFixed(2)}`;
+      msg.className = 'mt-3 text-sm text-green-600 font-bold';
+    } catch (e) {
+      msg.textContent = `Error updating database: ${e.message}`;
+      msg.className = 'mt-3 text-sm text-red-600 font-bold';
+    }
+  }
+  window.handleRechargeSuccess = handleRechargeSuccess;
+
+  function startRecharge() {
+    const amountInput = document.getElementById('recharge-amount');
+    const msg = document.getElementById('recharge-message');
+    const amount = parseFloat(amountInput.value);
+
+    if (isNaN(amount) || amount < 1) {
+      msg.textContent = "Please enter a valid amount (Min ₹1).";
+      msg.className = 'mt-3 text-sm text-red-500';
+      return;
+    }
+
+    const options = {
+      key: RAZORPAY_KEY_ID,
+      amount: amount * 100,
+      currency: "INR",
+      name: "SmartPay Recharge",
+      description: `Balance Recharge for ${name} (${uid})`,
+      handler: function (response){ window.handleRechargeSuccess(uid, amount, response.razorpay_payment_id); },
+      prefill: { name: name, email: role === 'admin' ? ADMIN_EMAIL : '' },
+      theme: { color: "#4f46e5" }
+    };
+
+    const rzp = new Razorpay(options);
+    rzp.open();
+    msg.textContent = `Opening Razorpay Checkout for ₹${amount.toFixed(2)}...`;
+    msg.className = 'mt-3 text-sm text-indigo-600';
+  }
+  window.startRecharge = startRecharge;
+
+  // Function to handle viewing log for a single student (Admin mode)
+  async function loadAdminStudentView(selectedUID, selectedName) {
+      const studentContainer = document.getElementById('student-detail-container');
+      const balanceSnap = await get(ref(db, `/balances/${selectedUID}/balance`));
+      const currentBalance = balanceSnap.exists() ? (balanceSnap.val() || 0) : 0;
+
+      let html = `
+          <div class='bg-white p-6 rounded-3xl shadow-xl border border-indigo-100'>
+              <h2 class='text-2xl font-bold text-indigo-600 mb-4'>Details: ${selectedName}</h2>
+              <p class='text-lg mb-4'>Current Balance: <span class='font-extrabold text-green-600'>₹${currentBalance.toFixed(2)}</span></p>
+              
+              <h3 class='text-lg font-bold text-gray-700 mb-3 border-b pb-2'>Transaction History (UID: ${selectedUID})</h3>
+              <div id='student-tx-history'>
+                  <p class='text-gray-500'>Loading transactions...</p>
+              </div>
+              
+              <button onclick='loadDashboard()' class='mt-6 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition'>
+                  \u2190 Back to All Students
+              </button>
+          </div>
+      `;
+      
+      content.innerHTML = html;
+      
+      // Start listening for transactions for this single student
+      const txRef = ref(db, `/transactions/${selectedUID}`);
+      onValue(txRef, (snap) => {
+          const transactions = snap.exists() ? snap.val() : {};
+          renderTransactionHistory(transactions, 'student-tx-history', selectedUID, true); // Admin sees transaction details
+      });
+  }
+  window.loadAdminStudentView = loadAdminStudentView; // FIX: Corrected function exposure
+
+  // --- MAIN DASHBOARD LOADER ---
+
+  async function loadDashboard() {
+    if (!role) { sub.textContent = "Invalid access. Redirecting..."; setTimeout(() => (window.location.href = "login.html"), 1500); return; }
+
+    // 1. ADMIN VIEW
+    if (role === "admin") {
+      title.textContent = "Admin Dashboard";
+      sub.textContent = "Welcome, Administrator";
+
+      const studentRef = ref(db, "student");
+      onValue(studentRef, async (snap) => {
+        let html = `<div class='bg-white p-8 rounded-3xl shadow-xl border border-gray-100'>
+                    <h2 class='text-2xl font-bold text-indigo-600 mb-6'>Registered Students</h2>
+                    <div class="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+                      <table class="min-w-full divide-y divide-gray-200">
+                        <thead class='bg-gray-50'>
+                          <tr>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">UID</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Balance (₹)</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200" id="student-table-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                    <div class='mt-6 text-center'>
+                  <button onclick="viewAttendance()"
+                          class='px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition duration-300 shadow-md'>
+                      View Attendance
+                  </button>
+              </div>`;
+
+        content.innerHTML = html;
+
+        if (snap.exists()) {
+          const data = snap.val();
+          const tbody = document.getElementById('student-table-body');
+          tbody.innerHTML = '';
+
+          const students = await Promise.all(Object.keys(data).map(async studentName => {
+            const studentUID = data[studentName];
+            const balanceSnap = await get(ref(db, `/balances/${studentUID}/balance`));
+            const balance = balanceSnap.exists() ? (balanceSnap.val() || 0) : 0;
+            return { name: studentName, uid: studentUID, balance: Number(balance) };
+          }));
+
+          students.forEach(s => {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+              <td class="px-6 py-4 text-sm font-medium text-gray-900">${s.name}</td>
+              <td class="px-6 py-4 text-sm text-gray-500 font-mono">${s.uid}</td>
+              <td class="px-6 py-4 text-sm font-bold text-green-600">₹${s.balance.toFixed(2)}</td>
+              <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                  <button onclick="loadAdminStudentView('${s.uid}', '${s.name}')" class="text-indigo-600 hover:text-indigo-900 text-xs font-bold bg-indigo-50 px-2 py-1 rounded-md transition">View Log</button>
+              </td>
+              `;
+          });
+        }
+      });
+
+
+    }
+
+    // 2. STUDENT VIEW
+    if (role === "student") {
+      title.textContent = "Student Dashboard";
+      sub.textContent = `Welcome, ${name}`;
+
+      // Static structure for the student view
+      content.innerHTML = `
+          <div class='grid grid-cols-1 md:grid-cols-2 gap-6'>
+              <!-- Account Info / Balance -->
+              <div id='account-info' class='bg-white p-8 rounded-3xl shadow-xl border space-y-4'>
+                  <h2 class='text-2xl font-bold text-indigo-600 mb-2'>Account Summary</h2>
+                  <div class='p-6 bg-indigo-50 rounded-2xl border border-indigo-200 text-center'>
+                      <p class='text-md font-semibold text-indigo-700'>Current Balance:</p>
+                      <p class='text-4xl font-extrabold text-green-600 mt-1' id='current-balance-display'>₹0.00</p>
+                  </div>
+                  <div class='p-3 bg-gray-50 rounded-lg'><strong>UID:</strong> ${uid}</div>
+              </div>
+
+              <!-- Recharge Section -->
+              <div class='bg-white p-8 rounded-3xl shadow-xl border'>
+                  <h3 class='text-lg font-bold mb-4 text-gray-700 border-b pb-2'>Add Balance via UPI / Razorpay</h3>
+                  <input type='number' id='recharge-amount' placeholder='Enter Amount (Min ₹1)' min='1'
+                        class='w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-indigo-500'>
+                  <button onclick='startRecharge()'
+                          class='w-full px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium shadow-md transition duration-200'>
+                      Recharge Now
+                  </button>
+                  <p id='recharge-message' class='mt-3 text-sm text-red-500 text-center min-h-[20px]'></p>
+              </div>
+          </div>
+          
+          <!-- Transaction History -->
+          <div class='bg-white p-6 rounded-3xl shadow-xl border'>
+              <h3 class='text-2xl font-bold text-gray-700 mb-4'>My Transaction History</h3>
+              <div id='student-tx-history'>
+                  <p class='text-gray-500'>Fetching history...</p>
+              </div>
+          </div>
+                  <div class='mt-4 text-center'>
+            <button onclick="viewAttendance()" 
+                    class='px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition duration-300 shadow-md'>
+                View Attendance
+            </button>
+        </div>
+      `;
+
+      // Start Realtime Listeners
+      const balanceRef = ref(db, `/balances/${uid}/balance`);
+      const txRef = ref(db, `/transactions/${uid}`);
+      
+      // Listener 1: Update Balance Display
+      onValue(balanceRef, (snapshot) => {
+          const balance = snapshot.exists() ? (snapshot.val() || 0) : 0;
+          document.getElementById('current-balance-display').textContent = `₹${Number(balance).toFixed(2)}`;
+      });
+
+      // Listener 2: Update Transaction History
+      onValue(txRef, (snapshot) => {
+          const transactions = snapshot.exists() ? snapshot.val() : {};
+          renderTransactionHistory(transactions, 'student-tx-history', uid, false); // Student view (not admin)
+      });
+
+
+
+    }
+  }
+
+  loadDashboard();
+  </script>
+  </body>
+  </html>
